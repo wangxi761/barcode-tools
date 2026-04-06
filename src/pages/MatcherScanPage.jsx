@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ToolHeader } from "../components/AppHeader.jsx";
 import { BottomNav } from "../components/BottomNav.jsx";
 import { loadMatcherBatch, normalizeBarcode } from "../features/barcode-matcher/store.js";
@@ -7,6 +7,8 @@ export function MatcherScanPage({ navigate }) {
   const batch = useMemo(() => loadMatcherBatch(), []);
   const [inputValue, setInputValue] = useState("");
   const [status, setStatus] = useState("idle");
+  const [cameraState, setCameraState] = useState("idle");
+  const [cameraMessage, setCameraMessage] = useState("");
   const [items, setItems] = useState(
     batch.items.map((value, index) => ({
       value,
@@ -15,6 +17,12 @@ export function MatcherScanPage({ navigate }) {
       matchedAt: "",
     }))
   );
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const detectorRef = useRef(null);
+  const detectFrameRef = useRef(null);
+  const lastScanAtRef = useRef(0);
+  const scanLockRef = useRef(false);
 
   const matchedCount = items.filter((item) => item.status === "matched").length;
   const displayItems = useMemo(
@@ -29,8 +37,28 @@ export function MatcherScanPage({ navigate }) {
     [items]
   );
 
-  const handleScan = () => {
-    const value = normalizeBarcode(inputValue);
+  const stopCamera = (nextState = "idle") => {
+    if (detectFrameRef.current) {
+      window.cancelAnimationFrame(detectFrameRef.current);
+      detectFrameRef.current = null;
+    }
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    detectorRef.current = null;
+    scanLockRef.current = false;
+    setCameraState(nextState);
+  };
+
+  const handleScanValue = (rawValue) => {
+    const value = normalizeBarcode(rawValue);
 
     if (!value || !items.length) {
       return;
@@ -55,6 +83,140 @@ export function MatcherScanPage({ navigate }) {
     setItems(nextItems);
     setStatus("matched");
     setInputValue(value);
+  };
+
+  const handleScan = () => {
+    handleScanValue(inputValue);
+  };
+
+  useEffect(() => () => stopCamera(), []);
+
+  useEffect(() => {
+    if (cameraState !== "active" || !videoRef.current || !detectorRef.current) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const scanFrame = async () => {
+      if (cancelled || !videoRef.current || !detectorRef.current) {
+        return;
+      }
+
+      const now = Date.now();
+
+      if (
+        videoRef.current.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA &&
+        now - lastScanAtRef.current >= 250 &&
+        !scanLockRef.current
+      ) {
+        lastScanAtRef.current = now;
+        scanLockRef.current = true;
+
+        try {
+          const detectedBarcodes = await detectorRef.current.detect(videoRef.current);
+          const detectedValue = detectedBarcodes.find((barcode) => normalizeBarcode(barcode.rawValue));
+
+          if (detectedValue?.rawValue) {
+            setCameraMessage("Barcode detected");
+            setInputValue(detectedValue.rawValue);
+            handleScanValue(detectedValue.rawValue);
+            stopCamera();
+            return;
+          }
+        } catch (error) {
+          setCameraMessage(error instanceof Error ? error.message : "Unable to detect barcode.");
+          stopCamera("error");
+          return;
+        } finally {
+          scanLockRef.current = false;
+        }
+      }
+
+      detectFrameRef.current = window.requestAnimationFrame(scanFrame);
+    };
+
+    detectFrameRef.current = window.requestAnimationFrame(scanFrame);
+
+    return () => {
+      cancelled = true;
+
+      if (detectFrameRef.current) {
+        window.cancelAnimationFrame(detectFrameRef.current);
+        detectFrameRef.current = null;
+      }
+    };
+  }, [cameraState, items]);
+
+  const handleOpenCamera = async () => {
+    if (cameraState === "active" || cameraState === "opening") {
+            stopCamera();
+            return;
+    }
+
+    if (!window.isSecureContext) {
+      setCameraState("error");
+      setCameraMessage("Camera requires HTTPS or localhost.");
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraState("error");
+      setCameraMessage("This device does not support camera access.");
+      return;
+    }
+
+    if (!("BarcodeDetector" in window)) {
+      setCameraState("error");
+      setCameraMessage("This browser does not support barcode recognition yet.");
+      return;
+    }
+
+    setCameraState("opening");
+    setCameraMessage("Opening camera...");
+
+    try {
+      const formats = typeof window.BarcodeDetector.getSupportedFormats === "function"
+        ? await window.BarcodeDetector.getSupportedFormats()
+        : [];
+
+      const preferredFormats = formats.filter((format) =>
+        ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e"].includes(
+          format
+        )
+      );
+
+      detectorRef.current = new window.BarcodeDetector({
+        formats: preferredFormats.length > 0 ? preferredFormats : undefined,
+      });
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+        },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      setCameraState("active");
+      setCameraMessage("Point the camera at a barcode.");
+    } catch (error) {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
+      setCameraState("error");
+      setCameraMessage(
+        error instanceof Error ? error.message : "Unable to open the camera on this device."
+      );
+    }
   };
 
   const statusConfig =
@@ -120,12 +282,47 @@ export function MatcherScanPage({ navigate }) {
               </button>
             ) : null}
           </div>
-          <button className="camera-button" type="submit" aria-label="Simulate camera scan">
+          <button
+            className={`camera-button ${cameraState === "active" ? "camera-button-active" : ""}`}
+            type="button"
+            aria-label={cameraState === "active" ? "Stop camera scan" : "Open camera scan"}
+            onClick={handleOpenCamera}
+          >
             <span className="material-symbols-outlined" aria-hidden="true">
-              photo_camera
+              {cameraState === "active" ? "stop_circle" : "photo_camera"}
             </span>
           </button>
         </form>
+
+        {cameraState !== "idle" ? (
+          <section className="camera-panel" aria-label="Camera scanner">
+            <div className="camera-preview-shell">
+              {cameraState === "active" || cameraState === "opening" ? (
+                <>
+                  <video
+                    ref={videoRef}
+                    className="camera-preview"
+                    autoPlay
+                    muted
+                    playsInline
+                  />
+                  <div className="camera-overlay" aria-hidden="true">
+                    <div className="camera-scan-line"></div>
+                  </div>
+                </>
+              ) : (
+                <div className="camera-placeholder">
+                  <span className="material-symbols-outlined" aria-hidden="true">
+                    warning
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className={`camera-note ${cameraState === "error" ? "camera-note-error" : ""}`}>
+              {cameraMessage}
+            </div>
+          </section>
+        ) : null}
 
         <section className="status-row" aria-label="Batch status">
           <div className="status-summary">
