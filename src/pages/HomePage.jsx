@@ -4,7 +4,7 @@ import { tools } from "../data/tools.js";
 
 export function HomePage({ navigate }) {
   return (
-    <div className="app-shell">
+    <div className="app-shell app-shell-home">
       <HomeHeader />
 
       <main className="home-main">
