@@ -1,0 +1,9 @@
+{
+  "name": "Barcode Toolkit",
+  "short_name": "BarcodeTools",
+  "description": "A React-based mobile-first toolbox for barcode workflows.",
+  "start_url": "./index.html#/",
+  "display": "standalone",
+  "background_color": "#faf9fc",
+  "theme_color": "#faf9fc"
+}
