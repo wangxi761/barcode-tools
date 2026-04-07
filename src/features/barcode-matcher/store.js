@@ -2,6 +2,17 @@ const STORAGE_KEY = "barcode-matcher-batch";
 
 export const normalizeBarcode = (value) => value.trim().toUpperCase();
 
+export const isBarcodeMatch = (left, right) => {
+  const normalizedLeft = normalizeBarcode(left);
+  const normalizedRight = normalizeBarcode(right);
+
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  return normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft);
+};
+
 export const extractBarcodesFromText = (text) => {
   const seen = new Set();
 

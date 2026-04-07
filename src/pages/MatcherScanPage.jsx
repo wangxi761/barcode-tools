@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ToolHeader } from "../components/AppHeader.jsx";
 import { BottomNav } from "../components/BottomNav.jsx";
-import { loadMatcherBatch, normalizeBarcode } from "../features/barcode-matcher/store.js";
+import {
+  isBarcodeMatch,
+  loadMatcherBatch,
+  normalizeBarcode,
+} from "../features/barcode-matcher/store.js";
+
+const findMatchingIndexes = (items, value) =>
+  items.reduce((matches, item, index) => {
+    if (isBarcodeMatch(item.value, value)) {
+      matches.push(index);
+    }
+
+    return matches;
+  }, []);
 
 export function MatcherScanPage({ navigate }) {
   const batch = useMemo(() => loadMatcherBatch(), []);
@@ -64,20 +77,25 @@ export function MatcherScanPage({ navigate }) {
       return;
     }
 
-    const matchedIndex = items.findIndex((item) => item.value === value);
+    const matchingIndexes = findMatchingIndexes(items, value);
 
-    if (matchedIndex === -1) {
+    if (!matchingIndexes.length) {
       setStatus("miss");
       return;
     }
 
-    if (items[matchedIndex].status === "matched") {
+    const pendingIndexes = matchingIndexes.filter((index) => items[index].status !== "matched");
+
+    if (!pendingIndexes.length) {
       setStatus("already");
       return;
     }
 
+    const nextMatchedIndexes = new Set(pendingIndexes);
     const nextItems = items.map((item, index) =>
-      index === matchedIndex ? { ...item, status: "matched", matchedAt: "Just now" } : item
+      nextMatchedIndexes.has(index)
+        ? { ...item, status: "matched", matchedAt: "Just now" }
+        : item
     );
 
     setItems(nextItems);
